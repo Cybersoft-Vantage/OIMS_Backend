@@ -14,18 +14,18 @@ load_dotenv(os.path.join(basedir, '..', '.env'))
 # Prefer explicit DATABASE_URL. If not set, attempt to build one from DB_* env vars.
 # Build PostgreSQL connection URL strictly from DB_* environment variables.
 # This removes fallback to sqlite and ensures the app connects to Postgres.
-db_host = os.getenv('DB_HOST')
-db_port = os.getenv('DB_PORT') or '5432'
-db_name = os.getenv('DB_NAME')
-db_user = os.getenv('DB_USERNAME')
-db_pass = os.getenv('DB_PASSWORD')
+# db_host = os.getenv('DB_HOST')
+# db_port = os.getenv('DB_PORT') or '5432'
+# db_name = os.getenv('DB_NAME')
+# db_user = os.getenv('DB_USERNAME')
+# db_pass = os.getenv('DB_PASSWORD')
 
-if not (db_host and db_name and db_user):
-    raise RuntimeError(
-        'Database configuration missing: please set DB_HOST, DB_NAME, and DB_USERNAME in .env or environment'
-    )
+# if not (db_host and db_name and db_user):
+#     raise RuntimeError(
+#         'Database configuration missing: please set DB_HOST, DB_NAME, and DB_USERNAME in .env or environment'
+#     )
 
-DATABASE_URL = f"postgresql://{db_user}:{db_pass or ''}@{db_host}:{db_port}/{db_name}"
+# DATABASE_URL = f"postgresql://{db_user}:{db_pass or ''}@{db_host}:{db_port}/{db_name}"
 
 # Ensure directory exists for sqlite file
 # No sqlite fallback: we expect Postgres for local development per env settings.
@@ -36,9 +36,9 @@ connect_args = {}
 
 
 # Only use DATABASE_URL for database configuration. use this in prod only 
-# DATABASE_URL = os.getenv('DATABASE_URL', '').strip()
-# if not DATABASE_URL:
-#     raise ValueError('DATABASE_URL is required. Set it in .env or your environment.')
+DATABASE_URL = os.getenv('DATABASE_URL', '').strip()
+if not DATABASE_URL:
+    raise ValueError('DATABASE_URL is required. Set it in .env or your environment.')
 
 # connect_args = {} if not DATABASE_URL.startswith('sqlite') else {"check_same_thread": False, "timeout": 30}
 # Use NullPool for SQLite file DBs to avoid connection pooling across threads/processes
