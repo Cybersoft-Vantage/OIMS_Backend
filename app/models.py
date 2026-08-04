@@ -76,6 +76,7 @@ class EmployeeDetail(Base):
     ProfileImage = Column(Text, nullable=True)
     IsActive = Column(Integer, default=1, server_default=text("1"))
     Role = Column(String(40), default="employee")
+    PasswordHash = Column(String(255), nullable=True)
     Verify = Column(Integer, default=0, server_default=text("0"))
     EmailVerifiedAt = Column(DateTime, nullable=True)
     VerificationOtpHash = Column(String(128), nullable=True)
@@ -111,6 +112,7 @@ class DetailedCategory(Base):
     DetailedCategoryId = Column(Integer, primary_key=True, index=True, autoincrement=True)
     Name = Column(String(80), nullable=False)
     ParentId = Column(Integer, ForeignKey("DetailedCategories.DetailedCategoryId"), nullable=True)
+    SubcategoryTagName = Column(String(3), nullable=True)
     Description = Column(Text, nullable=True)
     CustomSchema = Column(Text, nullable=True)  # JSON stored as text
     IsDeleted = Column(Integer, default=0, server_default=text("0"))
@@ -135,6 +137,7 @@ class DetailedAsset(Base):
     PurchaseCost = Column(Float, nullable=True)
     PurchaseDate = Column(Date, nullable=True)
     WarrantyEnd = Column(Date, nullable=True)
+    SoldPrice = Column(Float, nullable=True)
     CustomValues = Column(Text, nullable=True)  # JSON stored as text
     CreatedAt = Column(DateTime, default=datetime.datetime.utcnow, server_default=text("CURRENT_TIMESTAMP"))
     UpdatedAt = Column(DateTime, onupdate=func.now())

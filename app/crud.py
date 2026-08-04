@@ -1,6 +1,7 @@
 from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session
+from fastapi import UploadFile
 from . import models, security
 from .schemas import (
     EmployeeDetailCreate,
@@ -34,30 +35,6 @@ from .schemas import (
 import datetime
 
 
-def get_user_by_identifier(db: Session, identifier: str):
-    normalized = (identifier or "").strip()
-    if not normalized:
-        return None
-    return (
-        db.query(models.User)
-        .filter((models.User.username == normalized) | (models.User.email == normalized))
-        .first()
-    )
-
-
-def get_user_by_username(db: Session, username: str):
-    return db.query(models.User).filter(models.User.username == username).first()
-
-
-def create_user(db: Session, username: str, password: str, email: str = None, full_name: str = None, role: str = "employee"):
-    hashed = security.get_password_hash(password)
-    user = models.User(username=username, hashed_password=hashed, email=email, full_name=full_name, role=role)
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    return user
-
-
 def get_employee_detail(db: Session, employee_id: int):
     return db.query(models.EmployeeDetail).filter(models.EmployeeDetail.EmployeeId == employee_id).first()
 
@@ -66,33 +43,30 @@ def get_employee_detail_by_user_id(db: Session, user_id: str):
     return db.query(models.EmployeeDetail).filter(models.EmployeeDetail.UserId == user_id).first()
 
 
+def get_employee_detail_by_identifier(db: Session, identifier: str):
+    normalized = (identifier or "").strip()
+    if not normalized:
+        return None
+    return (
+        db.query(models.EmployeeDetail)
+        .filter((models.EmployeeDetail.UserId == normalized) | (models.EmployeeDetail.Email == normalized))
+        .first()
+    )
+
+
 def get_employee_details(db: Session, skip: int = 0, limit: int = 100):
     return db.query(models.EmployeeDetail).offset(skip).limit(limit).all()
 
 
 def create_employee_detail(db: Session, employee_in: EmployeeDetailCreate):
     data = employee_in.model_dump(exclude={"Password"})
+    password = (employee_in.Password or "").strip()
+    if password:
+        data["PasswordHash"] = security.get_password_hash(password)
     employee = models.EmployeeDetail(**data)
     db.add(employee)
     db.commit()
     db.refresh(employee)
-
-    password = employee_in.Password
-    if password:
-        existing_user = get_user_by_username(db, employee.UserId)
-        if existing_user:
-            existing_user.hashed_password = security.get_password_hash(password)
-            existing_user.role = data.get("Role", "employee")
-            db.commit()
-        else:
-            create_user(
-                db,
-                username=employee.UserId,
-                password=password,
-                email=employee.Email,
-                full_name=employee.FullName,
-                role=data.get("Role", "employee")
-            )
     return employee
 
 
@@ -101,7 +75,6 @@ def update_employee_detail(db: Session, employee_id: int, employee_in: EmployeeD
     if not employee:
         return None
 
-    original_username = employee.UserId
     original_email = employee.Email
     data = employee_in.model_dump(exclude={"Password"}, exclude_unset=True)
     for field, value in data.items():
@@ -119,32 +92,11 @@ def update_employee_detail(db: Session, employee_id: int, employee_in: EmployeeD
     db.commit()
     db.refresh(employee)
 
-    password = employee_in.Password
-    user = get_user_by_username(db, original_username)
-    if user and employee.UserId != original_username:
-        user.username = employee.UserId
-    if user and data.get("FullName") is not None:
-        user.full_name = employee.FullName
-    if user and data.get("Email") is not None:
-        user.email = employee.Email
-    if user and data.get("Role") is not None:
-        user.role = data.get("Role")
-    if user and (employee.UserId != original_username or data.get("FullName") is not None or data.get("Email") is not None or data.get("Role") is not None):
-        db.commit()
-
+    password = (employee_in.Password or "").strip() if employee_in.Password is not None else ""
     if password:
-        if user:
-            user.hashed_password = security.get_password_hash(password)
-            db.commit()
-        else:
-            create_user(
-                db,
-                username=employee.UserId,
-                password=password,
-                email=employee.Email,
-                full_name=employee.FullName,
-                role=data.get("Role", employee.Role or "employee")
-            )
+        employee.PasswordHash = security.get_password_hash(password)
+        db.commit()
+        db.refresh(employee)
 
     return employee
 
@@ -168,6 +120,110 @@ def delete_employee_detail(db: Session, employee_id: int):
     db.delete(employee)
     db.commit()
     return employee
+
+
+def import_employee_details(db: Session, file: UploadFile):
+    import csv
+    from io import StringIO
+
+    field_map = {
+        "userid": "UserId",
+        "user_id": "UserId",
+        "fullname": "FullName",
+        "full_name": "FullName",
+        "department": "Department",
+        "designation": "Designation",
+        "email": "Email",
+        "phone": "Phone",
+        "role": "Role",
+        "isactive": "IsActive",
+        "is_active": "IsActive",
+        "password": "Password",
+    }
+    valid_roles = {"employee", "admin", "hr"}
+
+    file_extension = file.filename.rsplit(".", 1)[-1].lower() if file.filename and "." in file.filename else ""
+    rows = []
+    if file_extension == "csv":
+        text_data = file.file.read().decode("utf-8-sig")
+        reader = csv.DictReader(StringIO(text_data))
+        rows = list(reader)
+    elif file_extension in {"xls", "xlsx"}:
+        try:
+            import openpyxl
+        except ImportError:
+            raise ValueError("XLS/XLSX import requires openpyxl. Please install it before using this feature.")
+
+        workbook = openpyxl.load_workbook(file.file, data_only=True)
+        sheet = workbook.active
+        header = [str(cell).strip() if cell is not None else "" for cell in next(sheet.iter_rows(values_only=True))]
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            rows.append({header[idx].strip(): row[idx] for idx in range(len(header)) if idx < len(row)})
+    else:
+        raise ValueError("Unsupported file type. Please upload a CSV or XLSX file.")
+
+    processed = 0
+    created = 0
+    updated = 0
+    errors: list[dict] = []
+
+    for index, raw_row in enumerate(rows, start=1):
+        processed += 1
+        try:
+            row = {
+                key.strip().lower(): (value if value is None or isinstance(value, str) else str(value))
+                for key, value in raw_row.items()
+                if key
+            }
+            payload: dict = {}
+            for raw_key, raw_value in row.items():
+                target = field_map.get(raw_key)
+                if not target:
+                    continue
+                value = str(raw_value).strip() if raw_value is not None else None
+                if target == "IsActive":
+                    if value in (None, ""):
+                        payload[target] = 1
+                    elif value.lower() in {"1", "true", "yes", "active"}:
+                        payload[target] = 1
+                    elif value.lower() in {"0", "false", "no", "inactive"}:
+                        payload[target] = 0
+                    else:
+                        raise ValueError("IsActive must be one of: 1/0/true/false/yes/no/active/inactive")
+                else:
+                    payload[target] = value
+
+            user_id = (payload.get("UserId") or "").strip()
+            full_name = (payload.get("FullName") or "").strip()
+            if not user_id:
+                raise ValueError("Missing required field 'UserId'.")
+            if not full_name:
+                raise ValueError("Missing required field 'FullName'.")
+
+            role = (payload.get("Role") or "employee").strip().lower()
+            if role not in valid_roles:
+                raise ValueError("Role must be one of: employee, admin, hr")
+            payload["Role"] = role
+
+            password = (payload.get("Password") or "").strip()
+            payload["Password"] = password or "CSV112233"
+
+            existing = get_employee_detail_by_user_id(db, user_id)
+            if existing:
+                update_payload = EmployeeDetailUpdate(**payload)
+                updated_employee = update_employee_detail(db, existing.EmployeeId, update_payload)
+                if not updated_employee:
+                    raise ValueError(f"Unable to update user with UserId '{user_id}'")
+                updated += 1
+            else:
+                create_payload = EmployeeDetailCreate(**payload)
+                create_employee_detail(db, create_payload)
+                created += 1
+        except Exception as exc:
+            db.rollback()
+            errors.append({"row": index, "error": str(exc)})
+
+    return {"processed": processed, "created": created, "updated": updated, "errors": errors}
 
 
 def get_category(db: Session, category_id: int):
@@ -543,12 +599,25 @@ def get_asset_assignments(db: Session, skip: int = 0, limit: int = 100):
 
 
 def assign_asset(db: Session, assignment_in: AssetAssignmentCreate):
+    asset = get_asset(db, assignment_in.AssetId)
+    if not asset:
+        return None
+
+    if asset.IsAvailable not in (None, 1):
+        return None
+
+    status_name = ''
+    if asset.StatusId:
+        status = get_asset_status(db, asset.StatusId)
+        status_name = (status.StatusName or '').strip().lower() if status else ''
+    if 'sold' in status_name:
+        return None
+
     assignment = models.AssetAssignment(**assignment_in.model_dump())
     db.add(assignment)
     db.commit()
     db.refresh(assignment)
 
-    asset = get_asset(db, assignment_in.AssetId)
     if asset:
         asset.CurrentEmployeeId = assignment_in.EmployeeId
         asset.IsAvailable = 0
@@ -851,6 +920,14 @@ def update_detailed_asset(db: Session, asset_id: int, asset_in: DetailedAssetUpd
         return None
     old_status = (asset.Status or '').strip().lower()
     data = asset_in.model_dump(exclude_unset=True)
+
+    # Lock sold status once sold price is set: allow sold price edits but prevent status change away from sold.
+    status_locked = old_status == 'sold' and asset.SoldPrice is not None
+    if status_locked and 'Status' in data:
+        requested_status = (data.get('Status') or '').strip().lower()
+        if requested_status and requested_status != 'sold':
+            data['Status'] = asset.Status
+
     for field, value in data.items():
         setattr(asset, field, value)
 
@@ -1016,12 +1093,24 @@ def get_detailed_assignments(db: Session, detailed_asset_id: int | None = None, 
 
 
 def assign_detailed_asset(db: Session, assignment_in: DetailedAssetAssignmentCreate):
-    # Prevent assigning assets that are marked damaged or under maintenance
+    # Prevent assigning assets that are marked damaged, under maintenance, or sold
     asset = get_detailed_asset(db, assignment_in.DetailedAssetId)
     if asset:
         status = (asset.Status or '').strip().lower()
-        if status in {'damaged', 'damage', 'maintenance'}:
+        if status in {'damaged', 'damage', 'maintenance', 'sold', 'sold out', 'sold-out'}:
             return None
+
+    # Prevent duplicate active assignment records for the same asset.
+    open_assignment = (
+        db.query(models.DetailedAssetAssignment)
+        .filter(
+            models.DetailedAssetAssignment.DetailedAssetId == assignment_in.DetailedAssetId,
+            (models.DetailedAssetAssignment.IsReturned == 0) | (models.DetailedAssetAssignment.IsReturned.is_(None))
+        )
+        .first()
+    )
+    if open_assignment:
+        return None
 
     assignment = models.DetailedAssetAssignment(**assignment_in.model_dump())
     db.add(assignment)

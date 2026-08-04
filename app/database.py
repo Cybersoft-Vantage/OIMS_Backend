@@ -72,6 +72,7 @@ def ensure_soft_delete_columns() -> None:
                 "AssetHistory": [("AssetCode", "TEXT"), ("AssetName", "TEXT"), ("EmployeeName", "TEXT")],
                 "EmployeeDetail": [("Role", "TEXT DEFAULT 'employee'"), ("ProfileImage", "TEXT")],
                 "DetailedAssetAssignments": [("ReturnedBy", "TEXT")],
+                "DetailedAssets": [("SoldPrice", "REAL")],
             }.items():
                 if not inspector.has_table(table_name):
                     continue
@@ -83,16 +84,36 @@ def ensure_soft_delete_columns() -> None:
                 for column_name, column_type in columns_to_add:
                     if column_name not in existing_columns:
                         conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
+
+            if inspector.has_table("EmployeeDetail"):
+                existing_columns = {
+                    row[1]
+                    for row in conn.execute(text('PRAGMA table_info([EmployeeDetail])')).fetchall()
+                }
+                if "PasswordHash" not in existing_columns:
+                    conn.execute(text('ALTER TABLE "EmployeeDetail" ADD COLUMN "PasswordHash" TEXT'))
         else:
             # Add missing EmployeeDetail columns for non-sqlite DBs, like Postgres.
             try:
                 conn.execute(text('ALTER TABLE "EmployeeDetail" ADD COLUMN IF NOT EXISTS "ProfileImage" TEXT'))
+                conn.execute(text('ALTER TABLE "EmployeeDetail" ADD COLUMN IF NOT EXISTS "PasswordHash" VARCHAR(255) NULL'))
                 conn.execute(text('ALTER TABLE "EmployeeDetail" ADD COLUMN IF NOT EXISTS "Verify" INTEGER NOT NULL DEFAULT 0'))
                 conn.execute(text('ALTER TABLE "EmployeeDetail" ADD COLUMN IF NOT EXISTS "EmailVerifiedAt" TIMESTAMP NULL'))
                 conn.execute(text('ALTER TABLE "EmployeeDetail" ADD COLUMN IF NOT EXISTS "VerificationOtpHash" VARCHAR(128) NULL'))
                 conn.execute(text('ALTER TABLE "EmployeeDetail" ADD COLUMN IF NOT EXISTS "VerificationOtpExpiresAt" TIMESTAMP NULL'))
                 conn.execute(text('ALTER TABLE "EmployeeDetail" ADD COLUMN IF NOT EXISTS "VerificationOtpAttempts" INTEGER NOT NULL DEFAULT 0'))
                 conn.execute(text('ALTER TABLE "EmployeeDetail" ADD COLUMN IF NOT EXISTS "VerificationOtpSentAt" TIMESTAMP NULL'))
+                conn.execute(text('ALTER TABLE "DetailedCategories" ADD COLUMN IF NOT EXISTS "SubcategoryTagName" VARCHAR(3) NULL'))
+                conn.execute(text('ALTER TABLE "DetailedAssets" ADD COLUMN IF NOT EXISTS "SoldPrice" DOUBLE PRECISION NULL'))
+
+                # One-time compatibility backfill: migrate password hashes from legacy users table.
+                if inspector.has_table("users"):
+                    conn.execute(text(
+                        'UPDATE "EmployeeDetail" e '
+                        'SET "PasswordHash" = u.hashed_password '
+                        'FROM users u '
+                        'WHERE e."PasswordHash" IS NULL AND u.username = e."UserId"'
+                    ))
             except (OperationalError, ProgrammingError):
                 # If EmployeeDetail is not present yet, startup create_all will handle it.
                 pass

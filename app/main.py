@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from sqlalchemy import inspect, text
 from fastapi.middleware.cors import CORSMiddleware
 from .database import engine, Base, ensure_soft_delete_columns, SessionLocal
-from . import models, crud
+from . import models, crud, security
 from .routes import auth, employees, assets, detailed_assets
 from .routes import detailed_assignments, procurement, maintenance, licensing
 
@@ -23,21 +23,10 @@ def startup() -> None:
     logging.info('Database URL resolved: %s', str(engine.url))
     logging.info('Using DB dialect: %s', engine.dialect.name)
 
-    # Seed default admin user if none exists
+    # Seed default admin employee (EmployeeDetail-only auth)
     try:
         db = SessionLocal()
         try:
-            existing_admin = db.query(models.User).filter(models.User.username == "admin").first()
-            if not existing_admin:
-                crud.create_user(
-                    db,
-                    username="admin",
-                    password="adminpass123",
-                    email="admin@oims.local",
-                    full_name="System Administrator",
-                    role="admin",
-                )
-
             existing_admin_employee = db.query(models.EmployeeDetail).filter(models.EmployeeDetail.UserId == "admin").first()
             if not existing_admin_employee:
                 admin_employee = models.EmployeeDetail(
@@ -49,13 +38,27 @@ def startup() -> None:
                     Phone="000-000-0000",
                     Role="admin",
                     IsActive=1,
+                    Verify=1,
+                    PasswordHash=security.get_password_hash("adminpass123"),
                 )
                 db.add(admin_employee)
                 db.commit()
                 db.refresh(admin_employee)
             else:
-                if existing_admin.email != "admin@example.com":
-                    existing_admin.email = "admin@example.com"
+                changed = False
+                if existing_admin_employee.Email != "admin@example.com":
+                    existing_admin_employee.Email = "admin@example.com"
+                    changed = True
+                if (existing_admin_employee.Role or "").lower() != "admin":
+                    existing_admin_employee.Role = "admin"
+                    changed = True
+                if int(existing_admin_employee.Verify or 0) != 1:
+                    existing_admin_employee.Verify = 1
+                    changed = True
+                if not existing_admin_employee.PasswordHash:
+                    existing_admin_employee.PasswordHash = security.get_password_hash("adminpass123")
+                    changed = True
+                if changed:
                     db.commit()
         finally:
             db.close()
@@ -128,6 +131,16 @@ app.include_router(detailed_assignments.router)
 app.include_router(procurement.router)
 app.include_router(maintenance.router)
 app.include_router(licensing.router)
+
+# Backward compatibility for clients still using /api prefix.
+app.include_router(auth.router, prefix="/api")
+app.include_router(employees.router, prefix="/api")
+app.include_router(assets.router, prefix="/api")
+app.include_router(detailed_assets.router, prefix="/api")
+app.include_router(detailed_assignments.router, prefix="/api")
+app.include_router(procurement.router, prefix="/api")
+app.include_router(maintenance.router, prefix="/api")
+app.include_router(licensing.router, prefix="/api")
 
 
 @app.get("/health")

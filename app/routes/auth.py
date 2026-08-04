@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session
@@ -16,16 +16,16 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 OTP_RESEND_COOLDOWN_SECONDS = 30
 
 
-def _issue_session_response(user: models.User, employee: models.EmployeeDetail | None = None):
-    access_token = security.create_access_token(data={"sub": user.username})
+def _issue_session_response(employee: models.EmployeeDetail):
+    access_token = security.create_access_token(data={"sub": employee.UserId})
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "role": user.role,
-        "username": user.username,
-        "email": user.email,
-        "full_name": user.full_name,
-        "profile_image": employee.ProfileImage if employee else None,
+        "role": employee.Role or "employee",
+        "username": employee.UserId,
+        "email": employee.Email,
+        "full_name": employee.FullName,
+        "profile_image": employee.ProfileImage,
         "verification_required": False,
     }
 
@@ -60,18 +60,18 @@ def _seconds_until_resend(employee: models.EmployeeDetail) -> int:
     return max(0, remaining)
 
 
-def _challenge_response(user: models.User, employee: models.EmployeeDetail):
+def _challenge_response(employee: models.EmployeeDetail):
     return {
         "access_token": None,
         "token_type": None,
-        "role": user.role,
-        "username": user.username,
-        "email": user.email,
-        "full_name": user.full_name,
-        "profile_image": employee.ProfileImage if employee else None,
+        "role": employee.Role or "employee",
+        "username": employee.UserId,
+        "email": employee.Email,
+        "full_name": employee.FullName,
+        "profile_image": employee.ProfileImage,
         "verification_required": True,
         "verification_message": "Email verification required. Check your inbox for the OTP.",
-        "verification_identifier": user.username or user.email,
+        "verification_identifier": employee.UserId or employee.Email,
         "retry_after_seconds": _seconds_until_resend(employee),
     }
 
@@ -82,13 +82,13 @@ def _has_valid_pending_otp(employee: models.EmployeeDetail) -> bool:
     return employee.VerificationOtpExpiresAt > datetime.datetime.utcnow()
 
 
-def _send_and_store_otp(user: models.User, employee: models.EmployeeDetail, db: Session):
+def _send_and_store_otp(employee: models.EmployeeDetail, db: Session):
     otp = _generate_otp()
     _prepare_verification(employee, otp)
     db.commit()
     db.refresh(employee)
 
-    sent = send_otp_email(employee.Email, otp, employee.FullName or user.full_name or user.username)
+    sent = send_otp_email(employee.Email, otp, employee.FullName or employee.UserId)
     if not sent:
         employee.VerificationOtpHash = None
         employee.VerificationOtpExpiresAt = None
@@ -106,30 +106,40 @@ def get_current_user(db: Session = Depends(get_db), token: str = Depends(oauth2_
     )
     try:
         payload = jwt.decode(token, security.SECRET_KEY, algorithms=[security.ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
+        user_id: str = payload.get("sub")
+        if user_id is None:
             raise credentials_exception
     except JWTError:
         raise credentials_exception
-    user = crud.get_user_by_username(db, username)
-    if user is None:
+    employee = crud.get_employee_detail_by_user_id(db, user_id)
+    if employee is None:
         raise credentials_exception
-    return user
+    return employee
 
 
 @router.post("/signup", response_model=schemas.UserOut)
 def signup(user_in: schemas.UserCreate, db: Session = Depends(get_db)):
-    existing = crud.get_user_by_username(db, user_in.username)
+    existing = crud.get_employee_detail_by_user_id(db, user_in.username)
     if existing:
         raise HTTPException(status_code=400, detail="Username already registered")
-    user = crud.create_user(
+    employee = crud.create_employee_detail(
         db,
-        username=user_in.username,
-        password=user_in.password,
-        email=user_in.email,
-        full_name=user_in.full_name,
+        schemas.EmployeeDetailCreate(
+            UserId=user_in.username,
+            FullName=user_in.full_name or user_in.username,
+            Email=user_in.email,
+            Password=user_in.password,
+            Role="employee",
+            IsActive=1,
+        )
     )
-    return user
+    return {
+        "id": employee.EmployeeId,
+        "username": employee.UserId,
+        "email": employee.Email,
+        "full_name": employee.FullName,
+        "role": employee.Role or "employee",
+    }
 
 
 @router.post("/token", response_model=schemas.Token)
@@ -147,13 +157,12 @@ async def login_for_access_token(request: Request, db: Session = Depends(get_db)
     if not identifier or not password:
         raise HTTPException(status_code=401, detail="Incorrect username or password")
 
-    user = crud.get_user_by_identifier(db, identifier)
-    if not user or not security.verify_password(password, user.hashed_password):
+    employee = crud.get_employee_detail_by_identifier(db, identifier)
+    if not employee or not employee.PasswordHash or not security.verify_password(password, employee.PasswordHash):
         raise HTTPException(status_code=401, detail="Incorrect username or password")
 
-    employee = None
     try:
-        employee = crud.get_employee_detail_by_user_id(db, user.username)
+        db.refresh(employee)
     except ProgrammingError:
         db.rollback()
 
@@ -162,14 +171,14 @@ async def login_for_access_token(request: Request, db: Session = Depends(get_db)
             raise HTTPException(status_code=400, detail="Employee email is required for verification.")
 
         if _has_valid_pending_otp(employee):
-            response = _challenge_response(user, employee)
+            response = _challenge_response(employee)
             response["verification_message"] = "OTP already sent. It is valid for 10 minutes."
             return response
 
-        _send_and_store_otp(user, employee, db)
-        return _challenge_response(user, employee)
+        _send_and_store_otp(employee, db)
+        return _challenge_response(employee)
 
-    return _issue_session_response(user, employee)
+    return _issue_session_response(employee)
 
 
 @router.post("/verify-email", response_model=schemas.Token)
@@ -183,21 +192,13 @@ def verify_email_otp(payload: dict, db: Session = Depends(get_db)):
     if len(normalized_otp) != 4:
         raise HTTPException(status_code=400, detail="Enter a valid 4-digit OTP.")
 
-    user = crud.get_user_by_identifier(db, identifier)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    employee = None
-    try:
-        employee = crud.get_employee_detail_by_user_id(db, user.username)
-    except ProgrammingError:
-        db.rollback()
+    employee = crud.get_employee_detail_by_identifier(db, identifier)
 
     if not employee:
         raise HTTPException(status_code=404, detail="Employee record not found")
 
     if int(employee.Verify or 0) == 1:
-        return _issue_session_response(user, employee)
+        return _issue_session_response(employee)
 
     if not employee.VerificationOtpHash or not employee.VerificationOtpExpiresAt:
         raise HTTPException(status_code=400, detail="No pending verification code found.")
@@ -226,7 +227,7 @@ def verify_email_otp(payload: dict, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(employee)
 
-    return _issue_session_response(user, employee)
+    return _issue_session_response(employee)
 
 
 @router.post("/resend-otp")
@@ -235,15 +236,7 @@ def resend_email_otp(payload: dict, db: Session = Depends(get_db)):
     if not identifier:
         raise HTTPException(status_code=400, detail="Identifier is required.")
 
-    user = crud.get_user_by_identifier(db, identifier)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    employee = None
-    try:
-        employee = crud.get_employee_detail_by_user_id(db, user.username)
-    except ProgrammingError:
-        db.rollback()
+    employee = crud.get_employee_detail_by_identifier(db, identifier)
 
     if not employee:
         raise HTTPException(status_code=404, detail="Employee record not found")
@@ -262,23 +255,23 @@ def resend_email_otp(payload: dict, db: Session = Depends(get_db)):
             headers={"Retry-After": str(remaining)},
         )
 
-    _send_and_store_otp(user, employee, db)
+    _send_and_store_otp(employee, db)
     return {"message": "OTP sent successfully.", "retry_after_seconds": OTP_RESEND_COOLDOWN_SECONDS}
 
 
 @router.get("/me", response_model=schemas.UserSessionOut)
-def read_current_user(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+def read_current_user(current_user: models.EmployeeDetail = Depends(get_current_user), db: Session = Depends(get_db)):
     employee = None
     try:
-        employee = crud.get_employee_detail_by_user_id(db, current_user.username)
+        employee = crud.get_employee_detail_by_user_id(db, current_user.UserId)
     except ProgrammingError:
         db.rollback()
     return {
-        "id": current_user.id,
-        "username": current_user.username,
-        "email": current_user.email,
-        "full_name": current_user.full_name,
-        "role": current_user.role,
+        "id": current_user.EmployeeId,
+        "username": current_user.UserId,
+        "email": current_user.Email,
+        "full_name": current_user.FullName,
+        "role": current_user.Role or "employee",
         "profile_image": employee.ProfileImage if employee else None,
         "employee": employee,
     }
