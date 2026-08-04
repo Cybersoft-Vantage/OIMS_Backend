@@ -214,6 +214,8 @@ def list_asset_assignments(skip: int = 0, limit: int = 100, db: Session = Depend
 @router.post("/assignments", response_model=schemas.AssetAssignmentOut, status_code=201)
 def assign_asset(assignment_in: schemas.AssetAssignmentCreate, db: Session = Depends(get_db)):
     assignment = crud.assign_asset(db, assignment_in)
+    if assignment is None:
+        raise HTTPException(status_code=400, detail="Asset cannot be assigned because it is unavailable or sold")
 
     employee = crud.get_employee_detail(db, assignment.EmployeeId)
     asset = crud.get_asset(db, assignment.AssetId)

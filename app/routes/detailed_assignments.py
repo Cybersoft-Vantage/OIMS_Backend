@@ -56,7 +56,7 @@ def list_detailed_assignments(detailed_asset_id: int | None = Query(None), skip:
 def assign_detailed_asset(assignment_in: schemas.DetailedAssetAssignmentCreate, db: Session = Depends(get_db)):
     assignment = crud.assign_detailed_asset(db, assignment_in)
     if assignment is None:
-        raise HTTPException(status_code=400, detail="Asset cannot be assigned while damaged or under maintenance")
+        raise HTTPException(status_code=400, detail="Asset cannot be assigned because it is already assigned, damaged, under maintenance, or sold")
 
     employee = crud.get_employee_detail(db, assignment.EmployeeId)
     asset = crud.get_detailed_asset(db, assignment.DetailedAssetId)
@@ -171,6 +171,76 @@ def return_detailed_asset(assignment_id: int, return_in: schemas.DetailedAssetAs
         )
 
     return assignment
+
+
+@router.post("/assignments/bulk/return", response_model=schemas.DetailedAssetAssignmentBulkReturnResult)
+def return_detailed_assets_bulk(payload: schemas.DetailedAssetAssignmentBulkReturn, db: Session = Depends(get_db)):
+    successful_returns: list[models.DetailedAssetAssignment] = []
+    failed_assignment_ids: list[int] = []
+
+    for assignment_id in payload.AssignmentIds:
+        returned = crud.return_detailed_asset(
+            db,
+            assignment_id,
+            schemas.DetailedAssetAssignmentReturn(
+                ReturnedDate=payload.ReturnedDate,
+                ReturnedBy=payload.ReturnedBy,
+                Remarks=payload.Remarks,
+                Status=payload.Status,
+            ),
+        )
+        if returned is None:
+            failed_assignment_ids.append(assignment_id)
+            continue
+        successful_returns.append(returned)
+
+    if not successful_returns:
+        raise HTTPException(status_code=400, detail="None of the selected assignments could be returned")
+
+    return_by_name, return_by_emails = _resolve_return_actor(db, payload.ReturnedBy)
+    grouped: dict[int, list[models.DetailedAssetAssignment]] = {}
+    for assignment in successful_returns:
+        grouped.setdefault(assignment.EmployeeId, []).append(assignment)
+
+    for employee_id, assignments in grouped.items():
+        employee = crud.get_employee_detail(db, employee_id)
+        assignee_name = employee.FullName if employee else "Employee"
+        assets_payload: list[dict] = []
+        for assignment in assignments:
+            asset = crud.get_detailed_asset(db, assignment.DetailedAssetId)
+            assets_payload.append(
+                {
+                    "asset_tag": asset.AssetTag if asset else "-",
+                    "name": asset.Name if asset else "-",
+                    "model": _detailed_asset_model_text(asset),
+                }
+            )
+
+        returned_date = str(payload.ReturnedDate or assignments[0].ReturnedDate or "-")
+        if employee and employee.Email:
+            send_return_email_to_returner(
+                to_address=employee.Email,
+                returner_name=assignee_name,
+                received_by_name=return_by_name,
+                returned_date=returned_date,
+                assets=assets_payload,
+            )
+
+        for recipient in return_by_emails:
+            if employee and employee.Email and recipient.lower() == employee.Email.lower():
+                continue
+            send_return_email_to_receiver(
+                to_address=recipient,
+                receiver_name=return_by_name,
+                return_by_name=assignee_name,
+                returned_date=returned_date,
+                assets=assets_payload,
+            )
+
+    return {
+        "returns": successful_returns,
+        "failed_assignment_ids": failed_assignment_ids,
+    }
 
 
 @router.get("/history", response_model=List[schemas.DetailedAssetHistoryOut])

@@ -324,6 +324,19 @@ class DetailedAssetAssignmentBulkResult(BaseModel):
     failed_asset_ids: List[int]
 
 
+class DetailedAssetAssignmentBulkReturn(BaseModel):
+    AssignmentIds: List[int]
+    ReturnedDate: Optional[date] = None
+    ReturnedBy: Optional[str] = None
+    Remarks: Optional[str] = None
+    Status: Optional[str] = None
+
+
+class DetailedAssetAssignmentBulkReturnResult(BaseModel):
+    returns: List[DetailedAssetAssignmentOut]
+    failed_assignment_ids: List[int]
+
+
 class AssetHistoryBase(BaseModel):
     AssetId: int
     EmployeeId: Optional[int] = None
@@ -377,6 +390,13 @@ class DetailedAssetImportResult(BaseModel):
     errors: List[ImportErrorDetail]
 
 
+class UserImportResult(BaseModel):
+    processed: int
+    created: int
+    updated: int
+    errors: List[ImportErrorDetail]
+
+
 class DeleteErrorResponse(BaseModel):
     error: str
     detail: str = "Cannot delete this item. It is still in use by other records."
@@ -385,8 +405,21 @@ class DeleteErrorResponse(BaseModel):
 class DetailedCategoryBase(BaseModel):
     Name: str
     ParentId: Optional[int] = None
+    SubcategoryTagName: Optional[str] = None
     Description: Optional[str] = None
     CustomSchema: Optional[str] = None
+
+    @field_validator("SubcategoryTagName", mode="before")
+    @classmethod
+    def validate_subcategory_tag_name(cls, value):
+        if value is None:
+            return None
+        normalized = str(value).strip().upper()
+        if not normalized:
+            return None
+        if len(normalized) != 3:
+            raise ValueError("SubcategoryTagName must be exactly 3 characters")
+        return normalized
 
 
 class DetailedCategoryCreate(DetailedCategoryBase):
@@ -396,8 +429,21 @@ class DetailedCategoryCreate(DetailedCategoryBase):
 class DetailedCategoryUpdate(BaseModel):
     Name: Optional[str] = None
     ParentId: Optional[int] = None
+    SubcategoryTagName: Optional[str] = None
     Description: Optional[str] = None
     CustomSchema: Optional[str] = None
+
+    @field_validator("SubcategoryTagName", mode="before")
+    @classmethod
+    def validate_subcategory_tag_name(cls, value):
+        if value is None:
+            return None
+        normalized = str(value).strip().upper()
+        if not normalized:
+            return None
+        if len(normalized) != 3:
+            raise ValueError("SubcategoryTagName must be exactly 3 characters")
+        return normalized
 
 
 class DetailedCategoryOut(DetailedCategoryBase):
@@ -420,6 +466,7 @@ class DetailedAssetBase(BaseModel):
     PurchaseCost: Optional[float] = None
     PurchaseDate: Optional[date] = None
     WarrantyEnd: Optional[date] = None
+    SoldPrice: Optional[float] = None
     CustomValues: Optional[str] = None
 
 
@@ -439,6 +486,7 @@ class DetailedAssetUpdate(BaseModel):
     PurchaseCost: Optional[float] = None
     PurchaseDate: Optional[date] = None
     WarrantyEnd: Optional[date] = None
+    SoldPrice: Optional[float] = None
     CustomValues: Optional[str] = None
 
 

@@ -23,6 +23,7 @@ def serialize_category(category: models.DetailedCategory, visited: set[int] | No
         "DetailedCategoryId": category.DetailedCategoryId,
         "Name": category.Name,
         "ParentId": category.ParentId,
+        "SubcategoryTagName": category.SubcategoryTagName,
         "Description": category.Description,
         "CustomSchema": category.CustomSchema,
         "children": children or None,
