@@ -417,8 +417,6 @@ class DetailedCategoryBase(BaseModel):
         normalized = str(value).strip().upper()
         if not normalized:
             return None
-        if len(normalized) != 3:
-            raise ValueError("SubcategoryTagName must be exactly 3 characters")
         return normalized
 
 
@@ -441,8 +439,6 @@ class DetailedCategoryUpdate(BaseModel):
         normalized = str(value).strip().upper()
         if not normalized:
             return None
-        if len(normalized) != 3:
-            raise ValueError("SubcategoryTagName must be exactly 3 characters")
         return normalized
 
 
