@@ -114,7 +114,8 @@ class DetailedCategory(Base):
     ParentId = Column(Integer, ForeignKey("DetailedCategories.DetailedCategoryId"), nullable=True)
     SubcategoryTagName = Column(String(3), nullable=True)
     Description = Column(Text, nullable=True)
-    CustomSchema = Column(Text, nullable=True)  # JSON stored as text
+    CustomSchema = Column(Text, nullable=True)
+    IsHidden = Column(Integer, default=0, server_default=text("0"))
     IsDeleted = Column(Integer, default=0, server_default=text("0"))
     DeletedAt = Column(DateTime, nullable=True)
     CreatedAt = Column(DateTime, default=datetime.datetime.utcnow, server_default=text("CURRENT_TIMESTAMP"))

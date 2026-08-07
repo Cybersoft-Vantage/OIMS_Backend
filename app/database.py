@@ -1,4 +1,5 @@
 
+import logging
 import os
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
@@ -6,6 +7,8 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 # Load .env if present
 basedir = os.path.abspath(os.path.dirname(__file__))
@@ -40,7 +43,7 @@ DATABASE_URL = os.getenv('DATABASE_URL', '').strip()
 if not DATABASE_URL:
     raise ValueError('DATABASE_URL is required. Set it in .env or your environment.')
 
-# connect_args = {} if not DATABASE_URL.startswith('sqlite') else {"check_same_thread": False, "timeout": 30}
+connect_args = {} if not DATABASE_URL.startswith('sqlite') else {"check_same_thread": False, "timeout": 30}
 # Use NullPool for SQLite file DBs to avoid connection pooling across threads/processes
 pool_kwargs = {}
 engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True, **pool_kwargs)
@@ -56,8 +59,40 @@ def get_db():
         db.close()
 
 
+def ensure_detailed_category_visibility_column() -> bool:
+    """Ensure DetailedCategories."IsHidden" exists.
+
+    Runs in its own transaction on purpose: the bulk column patch-up below shares one
+    transaction and swallows OperationalError/ProgrammingError, so on PostgreSQL a
+    single unrelated failure aborts that transaction and would silently roll this
+    column back. The category show/hide feature does not work without it.
+
+    Returns True when the column was added, False when it was already present.
+    Idempotent - safe to call on every startup.
+    """
+    inspector = inspect(engine)
+    if not inspector.has_table("DetailedCategories"):
+        # Fresh database: startup create_all() builds the table with the column.
+        return False
+
+    existing_columns = {column["name"] for column in inspector.get_columns("DetailedCategories")}
+    if "IsHidden" in existing_columns:
+        return False
+
+    column_type = "INTEGER NOT NULL DEFAULT 0"
+    with engine.begin() as conn:
+        conn.execute(text(f'ALTER TABLE "DetailedCategories" ADD COLUMN "IsHidden" {column_type}'))
+    return True
+
+
 def ensure_soft_delete_columns() -> None:
     """Ensure soft-delete columns exist for existing databases."""
+    try:
+        if ensure_detailed_category_visibility_column():
+            logger.info('Added DetailedCategories."IsHidden" column')
+    except (OperationalError, ProgrammingError):
+        logger.exception('Unable to add DetailedCategories."IsHidden" column')
+
     with engine.begin() as conn:
         dialect = engine.dialect.name
         inspector = inspect(conn)
@@ -103,7 +138,7 @@ def ensure_soft_delete_columns() -> None:
                 conn.execute(text('ALTER TABLE "EmployeeDetail" ADD COLUMN IF NOT EXISTS "VerificationOtpExpiresAt" TIMESTAMP NULL'))
                 conn.execute(text('ALTER TABLE "EmployeeDetail" ADD COLUMN IF NOT EXISTS "VerificationOtpAttempts" INTEGER NOT NULL DEFAULT 0'))
                 conn.execute(text('ALTER TABLE "EmployeeDetail" ADD COLUMN IF NOT EXISTS "VerificationOtpSentAt" TIMESTAMP NULL'))
-                conn.execute(text('ALTER TABLE "DetailedCategories" ADD COLUMN IF NOT EXISTS "SubcategoryTagName" VARCHAR(3) NULL'))
+                conn.execute(text('ALTER TABLE "DetailedCategories" ADD COLUMN IF NOT EXISTS "SubcategoryTagName" VARCHAR(20) NULL'))
                 conn.execute(text('ALTER TABLE "DetailedAssets" ADD COLUMN IF NOT EXISTS "SoldPrice" DOUBLE PRECISION NULL'))
 
                 # One-time compatibility backfill: migrate password hashes from legacy users table.

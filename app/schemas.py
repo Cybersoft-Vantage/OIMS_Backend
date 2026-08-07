@@ -430,6 +430,7 @@ class DetailedCategoryUpdate(BaseModel):
     SubcategoryTagName: Optional[str] = None
     Description: Optional[str] = None
     CustomSchema: Optional[str] = None
+    IsHidden: Optional[int] = None
 
     @field_validator("SubcategoryTagName", mode="before")
     @classmethod
@@ -442,8 +443,15 @@ class DetailedCategoryUpdate(BaseModel):
         return normalized
 
 
+class DetailedCategoryVisibility(BaseModel):
+    IsHidden: bool
+    # Hiding/showing a parent applies to its subcategories too unless disabled.
+    Cascade: bool = True
+
+
 class DetailedCategoryOut(DetailedCategoryBase):
     DetailedCategoryId: int
+    IsHidden: Optional[int] = 0
 
     children: Optional[List["DetailedCategoryOut"]] = None
 

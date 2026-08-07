@@ -33,6 +33,10 @@ from .schemas import (
     SoftwareLicenseUpdate,
 )
 import datetime
+import re
+
+ASSIGNED_STATUS = "Assigned"
+AVAILABLE_STATUS = "Available"
 
 
 def get_employee_detail(db: Session, employee_id: int):
@@ -757,6 +761,43 @@ def delete_detailed_category(db: Session, category_id: int):
     return category
 
 
+def set_detailed_category_visibility(db: Session, category_id: int, is_hidden: bool, cascade: bool = True):
+    """Hide or show a category. Hiding keeps the category and its assets, but the
+    asset listings and pickers filter them out. Cascades to subcategories by default
+    so hiding a parent does not leave visible orphans underneath it."""
+    category = (
+        db.query(models.DetailedCategory)
+        .filter(models.DetailedCategory.DetailedCategoryId == category_id, models.DetailedCategory.IsDeleted == 0)
+        .first()
+    )
+    if not category:
+        return None
+
+    target_ids = _get_detailed_category_subtree_ids(db, category_id) if cascade else [category_id]
+    flag = 1 if is_hidden else 0
+    for target_id in target_ids:
+        target = (
+            db.query(models.DetailedCategory)
+            .filter(models.DetailedCategory.DetailedCategoryId == target_id)
+            .first()
+        )
+        if target:
+            target.IsHidden = flag
+
+    db.commit()
+    db.refresh(category)
+    return category
+
+
+def get_hidden_detailed_category_ids(db: Session) -> list[int]:
+    rows = (
+        db.query(models.DetailedCategory.DetailedCategoryId)
+        .filter(models.DetailedCategory.IsDeleted == 0, models.DetailedCategory.IsHidden == 1)
+        .all()
+    )
+    return [row[0] for row in rows]
+
+
 def get_deleted_detailed_categories(db: Session, skip: int = 0, limit: int = 100):
     return db.query(models.DetailedCategory).filter(models.DetailedCategory.IsDeleted == 1).offset(skip).limit(limit).all()
 
@@ -811,15 +852,28 @@ def import_detailed_assets(db: Session, file: UploadFile):
             pass
         raise ValueError(f"Invalid date format: {value}")
 
+    def normalize_header(value) -> str:
+        """Headers are matched on letters and digits only, so 'Make / Model',
+        'make_model' and 'MakeModel' all resolve to the same field."""
+        return re.sub(r"[^a-z0-9]", "", str(value if value is not None else "").strip().lower())
+
+    # Accepts both the internal field names and the friendlier column titles used by
+    # the downloadable template (ParentCategory / BrandName / Model).
     field_map = {
         "assettag": "AssetTag",
         "name": "Name",
+        "brandname": "Name",
         "detailedcategoryid": "DetailedCategoryId",
         "detailedcategory": "DetailedCategoryId",
+        "parentcategory": "DetailedCategoryId",
+        "category": "DetailedCategoryId",
         "subcategory": "SubCategory",
         "makemodel": "MakeModel",
+        "model": "MakeModel",
         "serialno": "SerialNo",
+        "serialnumber": "SerialNo",
         "specifications": "Specifications",
+        "specification": "Specifications",
         "status": "Status",
         "purchasecost": "PurchaseCost",
         "purchasedate": "PurchaseDate",
@@ -829,6 +883,11 @@ def import_detailed_assets(db: Session, file: UploadFile):
 
     categories = {str(cat.DetailedCategoryId): cat for cat in db.query(models.DetailedCategory).filter(models.DetailedCategory.IsDeleted == 0).all()}
     categories_by_name = {cat.Name.strip().lower(): cat for cat in categories.values() if cat.Name}
+    # A ParentCategory column names a top-level category, so resolve against those
+    # first - a subcategory sharing the name must not win.
+    parent_categories_by_name = {
+        cat.Name.strip().lower(): cat for cat in categories.values() if cat.Name and cat.ParentId is None
+    }
 
     existing_tags = {str(asset.AssetTag).strip().lower() for asset in db.query(models.DetailedAsset).filter(models.DetailedAsset.AssetTag != None).all()}
     existing_serials = {str(asset.SerialNo).strip().lower() for asset in db.query(models.DetailedAsset).filter(models.DetailedAsset.SerialNo != None).all()}
@@ -861,11 +920,11 @@ def import_detailed_assets(db: Session, file: UploadFile):
 
     for index, raw_row in enumerate(rows, start=1):
         processed += 1
-        row = {key.strip().lower(): (value if value is None or isinstance(value, str) else str(value)) for key, value in raw_row.items() if key}
+        row = {normalize_header(key): (value if value is None or isinstance(value, str) else str(value)) for key, value in raw_row.items() if key}
         payload = {}
         try:
             for raw_key, raw_value in row.items():
-                target = field_map.get(raw_key.strip().lower())
+                target = field_map.get(raw_key)
                 if not target:
                     continue
                 if target in {"PurchaseDate", "WarrantyEnd"}:
@@ -878,8 +937,11 @@ def import_detailed_assets(db: Session, file: UploadFile):
                     elif str(raw_value).strip().isdigit():
                         payload[target] = int(str(raw_value).strip())
                     else:
-                        match = categories_by_name.get(str(raw_value).strip().lower())
-                        payload[target] = match.DetailedCategoryId if match else None
+                        lookup = str(raw_value).strip().lower()
+                        match = parent_categories_by_name.get(lookup) or categories_by_name.get(lookup)
+                        if not match:
+                            raise ValueError(f"Parent category not found: {raw_value}")
+                        payload[target] = match.DetailedCategoryId
                 else:
                     payload[target] = str(raw_value).strip() if raw_value is not None else None
 
@@ -1119,8 +1181,8 @@ def assign_detailed_asset(db: Session, assignment_in: DetailedAssetAssignmentCre
 
     asset = get_detailed_asset(db, assignment_in.DetailedAssetId)
     if asset:
-        # Update a simple status/holder fields on DetailedAsset if desired
-        asset.Status = asset.Status or "assigned"
+        # An asset that is out with an employee is no longer available.
+        asset.Status = ASSIGNED_STATUS
         db.commit()
         db.refresh(asset)
 
@@ -1158,7 +1220,12 @@ def return_detailed_asset(db: Session, assignment_id: int, return_in: DetailedAs
     asset = get_detailed_asset(db, assignment.DetailedAssetId)
     if asset:
         old_status = (asset.Status or '').strip().lower()
-        asset.Status = return_in.Status or asset.Status or "available"
+        requested_status = (return_in.Status or '').strip()
+        if requested_status:
+            asset.Status = requested_status
+        elif old_status in {'', ASSIGNED_STATUS.lower()}:
+            # No condition supplied - the asset is back on the shelf.
+            asset.Status = AVAILABLE_STATUS
         db.commit()
         db.refresh(asset)
 

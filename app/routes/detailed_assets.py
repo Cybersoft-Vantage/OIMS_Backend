@@ -26,6 +26,7 @@ def serialize_category(category: models.DetailedCategory, visited: set[int] | No
         "SubcategoryTagName": category.SubcategoryTagName,
         "Description": category.Description,
         "CustomSchema": category.CustomSchema,
+        "IsHidden": 1 if category.IsHidden else 0,
         "children": children or None,
     }
 
@@ -82,6 +83,21 @@ def delete_category(category_id: int, db: Session = Depends(get_db)):
     if isinstance(result, dict) and result.get("error"):
         raise HTTPException(status_code=409, detail=result["error"])
     return {"ok": True}
+
+
+@router.put("/categories/{category_id}/visibility", response_model=schemas.DetailedCategoryOut)
+def set_category_visibility(
+    category_id: int,
+    payload: schemas.DetailedCategoryVisibility,
+    db: Session = Depends(get_db),
+):
+    category = crud.set_detailed_category_visibility(db, category_id, payload.IsHidden, cascade=payload.Cascade)
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
+    serialized = serialize_category(category)
+    if serialized is None:
+        raise HTTPException(status_code=500, detail="Failed to serialize category")
+    return serialized
 
 
 @router.post("/categories/{category_id}/restore", response_model=schemas.DetailedCategoryOut)
