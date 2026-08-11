@@ -473,6 +473,30 @@ class DetailedAssetBase(BaseModel):
     SoldPrice: Optional[float] = None
     CustomValues: Optional[str] = None
 
+    @field_validator("PurchaseDate", "WarrantyEnd", mode="before")
+    @classmethod
+    def optional_date(cls, value):
+        """Both dates are optional. A date input that was never filled in - or was
+        cleared - arrives as an empty string, which must read as 'no date' instead of
+        failing validation."""
+        if value is None:
+            return None
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
+
+    @field_validator("AssetTag", "SerialNo", mode="before")
+    @classmethod
+    def optional_unique_text(cls, value):
+        """Asset tag and serial number are unique in the database, where NULL may repeat
+        but an empty string may not. A field left blank therefore has to be stored as
+        NULL, otherwise the second asset saved without a serial number is rejected."""
+        if value is None:
+            return None
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
+
 
 class DetailedAssetCreate(DetailedAssetBase):
     pass
@@ -492,6 +516,28 @@ class DetailedAssetUpdate(BaseModel):
     WarrantyEnd: Optional[date] = None
     SoldPrice: Optional[float] = None
     CustomValues: Optional[str] = None
+
+    @field_validator("PurchaseDate", "WarrantyEnd", mode="before")
+    @classmethod
+    def optional_date(cls, value):
+        """Clearing either date on the edit form sends an empty string - store it as
+        NULL rather than rejecting the update."""
+        if value is None:
+            return None
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
+
+    @field_validator("AssetTag", "SerialNo", mode="before")
+    @classmethod
+    def optional_unique_text(cls, value):
+        """Clearing the tag or serial number stores NULL: both are unique columns, where
+        an empty string would clash with the next asset saved without one."""
+        if value is None:
+            return None
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value
 
 
 class DetailedAssetOut(DetailedAssetBase):
@@ -516,6 +562,9 @@ class ProcurementRequestBase(BaseModel):
     Item: str
     Quantity: int
     Status: Optional[str] = "Pending"
+    RequestedByEmployeeId: Optional[int] = None
+    RequestedByName: Optional[str] = None
+    Justification: Optional[str] = None
 
 
 class ProcurementRequestCreate(ProcurementRequestBase):
@@ -528,6 +577,7 @@ class ProcurementRequestUpdate(BaseModel):
     Item: Optional[str] = None
     Quantity: Optional[int] = None
     Status: Optional[str] = None
+    Justification: Optional[str] = None
 
 
 class ProcurementRequestOut(ProcurementRequestBase):
@@ -607,6 +657,9 @@ class WorkOrderBase(BaseModel):
     Status: Optional[str] = "open"
     RepairCost: Optional[float] = None
     Notes: Optional[str] = None
+    ResolvedByEmployeeId: Optional[int] = None
+    ResolvedByName: Optional[str] = None
+    Resolution: Optional[str] = None
 
 
 class WorkOrderCreate(WorkOrderBase):
@@ -630,3 +683,71 @@ class WorkOrderOut(WorkOrderBase):
     CompletedAt: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
+# Employee portal: everything below is scoped to the signed-in employee, so no
+# payload here carries an employee id - the token decides whose records they are.
+# ---------------------------------------------------------------------------
+
+
+class MyAssetOut(BaseModel):
+    """A detailed asset as its holder sees it, with the assignment that gave it to them."""
+
+    AssignmentId: int
+    DetailedAssetId: int
+    AssetTag: Optional[str] = None
+    Name: Optional[str] = None
+    DetailedCategoryId: Optional[int] = None
+    CategoryName: Optional[str] = None
+    SubCategory: Optional[str] = None
+    MakeModel: Optional[str] = None
+    SerialNo: Optional[str] = None
+    Specifications: Optional[str] = None
+    Status: Optional[str] = None
+    PurchaseDate: Optional[date] = None
+    WarrantyEnd: Optional[date] = None
+    CustomValues: Optional[str] = None
+    AssignedDate: Optional[date] = None
+    ReturnedDate: Optional[date] = None
+    AssignedBy: Optional[str] = None
+    ReturnedBy: Optional[str] = None
+    Remarks: Optional[str] = None
+    IsReturned: Optional[int] = 0
+
+
+class MyPortalSummary(BaseModel):
+    EmployeeId: int
+    FullName: Optional[str] = None
+    Department: Optional[str] = None
+    Designation: Optional[str] = None
+    AssignedAssetCount: int
+    ReturnedAssetCount: int
+    OpenRequestCount: int
+    OpenIssueCount: int
+    ExpiringWarrantyCount: int
+
+
+class MyProcurementRequestCreate(BaseModel):
+    Item: str
+    Quantity: int = 1
+    CategoryId: Optional[int] = None
+    SubCategoryId: Optional[int] = None
+    Justification: Optional[str] = None
+
+
+class MyIssueCreate(BaseModel):
+    """An employee reporting a fault on an asset they are holding."""
+
+    DetailedAssetId: int
+    Notes: str
+
+
+class WorkOrderResolve(BaseModel):
+    """Closing a reported issue. The resolver comes from the caller's token, not here."""
+
+    Resolution: Optional[str] = None
+    RepairCost: Optional[float] = None
+    VendorId: Optional[int] = None
+    Status: Optional[str] = "repaired"
+    AssetStatus: Optional[str] = None
