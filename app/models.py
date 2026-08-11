@@ -175,11 +175,16 @@ class WorkOrder(Base):
     Status = Column(String(40), default="open")
     RepairCost = Column(Float, nullable=True)
     Notes = Column(Text, nullable=True)
+    # Who closed the job off, and what they did about it.
+    ResolvedByEmployeeId = Column(Integer, ForeignKey("EmployeeDetail.EmployeeId"), nullable=True)
+    ResolvedByName = Column(String(150), nullable=True)
+    Resolution = Column(Text, nullable=True)
     CreatedAt = Column(DateTime, default=datetime.datetime.utcnow, server_default=text("CURRENT_TIMESTAMP"))
     CompletedAt = Column(DateTime, nullable=True)
 
     asset = relationship("DetailedAsset", back_populates="workorders")
     vendor = relationship("Vendor")
+    resolved_by = relationship("EmployeeDetail", foreign_keys=[ResolvedByEmployeeId])
 
 
 class SubCategory(Base):
@@ -333,11 +338,17 @@ class ProcurementRequest(Base):
     Item = Column(String(200), nullable=False)
     Quantity = Column(Integer, nullable=False, default=1)
     Status = Column(String(40), nullable=False, default="Pending")
+    # Who asked for the item. Set when an employee raises the request from their own
+    # portal, so procurement can be answered without guessing who needs the equipment.
+    RequestedByEmployeeId = Column(Integer, ForeignKey("EmployeeDetail.EmployeeId"), nullable=True)
+    RequestedByName = Column(String(150), nullable=True)
+    Justification = Column(Text, nullable=True)
     CreatedAt = Column(DateTime, default=datetime.datetime.utcnow, server_default=text("CURRENT_TIMESTAMP"))
 
     # optional relationships (not strictly required for CRUD operations here)
     category = relationship("DetailedCategory", foreign_keys=[CategoryId])
     subcategory = relationship("DetailedCategory", foreign_keys=[SubCategoryId])
+    requested_by = relationship("EmployeeDetail", foreign_keys=[RequestedByEmployeeId])
 
 
 class AssetHistory(Base):

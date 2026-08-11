@@ -159,8 +159,10 @@ def import_assets(file: UploadFile = File(...), db: Session = Depends(get_db)):
 @router.put("/assets/{asset_id}", response_model=schemas.DetailedAssetOut)
 def update_asset(asset_id: int, asset_in: schemas.DetailedAssetUpdate, db: Session = Depends(get_db)):
     asset = crud.update_detailed_asset(db, asset_id, asset_in)
-    if not asset:
+    if asset is None:
         raise HTTPException(status_code=404, detail="Asset not found")
+    if isinstance(asset, dict) and asset.get("error"):
+        raise HTTPException(status_code=409, detail=asset["error"])
     return asset
 
 

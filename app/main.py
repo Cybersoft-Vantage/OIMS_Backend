@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .database import engine, Base, ensure_soft_delete_columns, SessionLocal
 from . import models, crud, security
 from .routes import auth, employees, assets, detailed_assets
-from .routes import detailed_assignments, procurement, maintenance, licensing
+from .routes import detailed_assignments, procurement, maintenance, licensing, employee_portal
 
 app = FastAPI(title="OIMS Backend")
 
@@ -131,6 +131,7 @@ app.include_router(detailed_assignments.router)
 app.include_router(procurement.router)
 app.include_router(maintenance.router)
 app.include_router(licensing.router)
+app.include_router(employee_portal.router)
 
 # Backward compatibility for clients still using /api prefix.
 app.include_router(auth.router, prefix="/api")
@@ -141,6 +142,7 @@ app.include_router(detailed_assignments.router, prefix="/api")
 app.include_router(procurement.router, prefix="/api")
 app.include_router(maintenance.router, prefix="/api")
 app.include_router(licensing.router, prefix="/api")
+app.include_router(employee_portal.router, prefix="/api")
 
 
 @app.get("/health")
