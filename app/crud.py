@@ -69,7 +69,7 @@ def get_employee_detail_by_identifier(db: Session, identifier: str):
 
 
 def get_employee_details(db: Session, skip: int = 0, limit: int = 100):
-    return db.query(models.EmployeeDetail).offset(skip).limit(limit).all()
+    return db.query(models.EmployeeDetail).order_by(models.EmployeeDetail.EmployeeId).offset(skip).limit(limit).all()
 
 
 def create_employee_detail(db: Session, employee_in: EmployeeDetailCreate):
@@ -720,7 +720,14 @@ def get_detailed_category(db: Session, category_id: int):
 
 def get_detailed_categories(db: Session, skip: int = 0, limit: int = 100):
     # Return hierarchical categories (top-level parents with children relationship)
-    return db.query(models.DetailedCategory).filter(models.DetailedCategory.IsDeleted == 0, models.DetailedCategory.ParentId == None).offset(skip).limit(limit).all()
+    return (
+        db.query(models.DetailedCategory)
+        .filter(models.DetailedCategory.IsDeleted == 0, models.DetailedCategory.ParentId == None)
+        .order_by(models.DetailedCategory.DetailedCategoryId)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
 
 
 def create_detailed_category(db: Session, category_in: DetailedCategoryCreate):
@@ -809,7 +816,14 @@ def get_hidden_detailed_category_ids(db: Session) -> list[int]:
 
 
 def get_deleted_detailed_categories(db: Session, skip: int = 0, limit: int = 100):
-    return db.query(models.DetailedCategory).filter(models.DetailedCategory.IsDeleted == 1).offset(skip).limit(limit).all()
+    return (
+        db.query(models.DetailedCategory)
+        .filter(models.DetailedCategory.IsDeleted == 1)
+        .order_by(models.DetailedCategory.DetailedCategoryId)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
 
 
 def restore_detailed_category(db: Session, category_id: int):
@@ -829,7 +843,16 @@ def get_detailed_asset(db: Session, asset_id: int):
 
 
 def get_detailed_assets(db: Session, skip: int = 0, limit: int = 100):
-    return db.query(models.DetailedAsset).filter(models.DetailedAsset.IsDeleted == 0).offset(skip).limit(limit).all()
+    # Ordered by primary key: without an ORDER BY, PostgreSQL is free to return rows in
+    # any order, so a caller walking the pages could see a row twice and miss another.
+    return (
+        db.query(models.DetailedAsset)
+        .filter(models.DetailedAsset.IsDeleted == 0)
+        .order_by(models.DetailedAsset.DetailedAssetId)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
 
 
 def _detailed_asset_unique_conflict(db: Session, data: dict, exclude_asset_id: int | None = None) -> str | None:
@@ -1400,7 +1423,14 @@ def delete_detailed_asset(db: Session, asset_id: int):
 
 
 def get_deleted_detailed_assets(db: Session, skip: int = 0, limit: int = 100):
-    return db.query(models.DetailedAsset).filter(models.DetailedAsset.IsDeleted == 1).offset(skip).limit(limit).all()
+    return (
+        db.query(models.DetailedAsset)
+        .filter(models.DetailedAsset.IsDeleted == 1)
+        .order_by(models.DetailedAsset.DetailedAssetId)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
 
 
 def restore_detailed_asset(db: Session, asset_id: int):
@@ -1414,6 +1444,29 @@ def restore_detailed_asset(db: Session, asset_id: int):
     return asset
 
 
+def actor_display_name(db: Session, actor: str | None) -> str | None:
+    """The full name behind a UserId, email or name, for text people will read.
+
+    `AssignedBy` / `ReturnedBy` carry whoever was signed in, which the web app sends as
+    the UserId. Written into a history note as-is that reads as "Assigned by 30002", so
+    resolve it to the employee's name and keep the original only when nobody matches.
+    """
+    lookup = str(actor or '').strip()
+    if not lookup:
+        return None
+
+    employee = (
+        db.query(models.EmployeeDetail)
+        .filter(
+            (models.EmployeeDetail.UserId == lookup)
+            | (func.lower(models.EmployeeDetail.Email) == lookup.lower())
+            | (func.lower(models.EmployeeDetail.FullName) == lookup.lower())
+        )
+        .first()
+    )
+    return (employee.FullName or lookup) if employee else lookup
+
+
 # DetailedAsset Assignment / History
 def get_detailed_assignment(db: Session, assignment_id: int):
     return db.query(models.DetailedAssetAssignment).filter(models.DetailedAssetAssignment.AssignmentId == assignment_id).first()
@@ -1423,7 +1476,7 @@ def get_detailed_assignments(db: Session, detailed_asset_id: int | None = None, 
     q = db.query(models.DetailedAssetAssignment)
     if detailed_asset_id is not None:
         q = q.filter(models.DetailedAssetAssignment.DetailedAssetId == detailed_asset_id)
-    return q.offset(skip).limit(limit).all()
+    return q.order_by(models.DetailedAssetAssignment.AssignmentId).offset(skip).limit(limit).all()
 
 
 def assign_detailed_asset(db: Session, assignment_in: DetailedAssetAssignmentCreate):
@@ -1458,8 +1511,9 @@ def assign_detailed_asset(db: Session, assignment_in: DetailedAssetAssignmentCre
 
     employee = db.query(models.EmployeeDetail).filter(models.EmployeeDetail.EmployeeId == assignment_in.EmployeeId).first()
     notes = str(assignment_in.Remarks or '').strip()
-    if assignment_in.AssignedBy:
-        notes = f"Assigned by {assignment_in.AssignedBy}" + (f" - {notes}" if notes else "")
+    assigned_by_name = actor_display_name(db, assignment_in.AssignedBy)
+    if assigned_by_name:
+        notes = f"Assigned by {assigned_by_name}" + (f" - {notes}" if notes else "")
     history = models.DetailedAssetHistory(
         DetailedAssetId=assignment_in.DetailedAssetId,
         EmployeeId=assignment_in.EmployeeId,
@@ -1531,8 +1585,9 @@ def return_detailed_asset(db: Session, assignment_id: int, return_in: DetailedAs
 
     employee = db.query(models.EmployeeDetail).filter(models.EmployeeDetail.EmployeeId == assignment.EmployeeId).first()
     notes = str(return_in.Remarks or '').strip()
-    if return_in.ReturnedBy:
-        notes = f"{notes} (Returned by {return_in.ReturnedBy})" if notes else f"Returned by {return_in.ReturnedBy}"
+    returned_by_name = actor_display_name(db, return_in.ReturnedBy)
+    if returned_by_name:
+        notes = f"{notes} (Returned by {returned_by_name})" if notes else f"Returned by {returned_by_name}"
     history = models.DetailedAssetHistory(
         DetailedAssetId=assignment.DetailedAssetId,
         EmployeeId=assignment.EmployeeId,
@@ -1557,7 +1612,7 @@ def get_detailed_histories(db: Session, detailed_asset_id: int | None = None, sk
     q = db.query(models.DetailedAssetHistory)
     if detailed_asset_id is not None:
         q = q.filter(models.DetailedAssetHistory.DetailedAssetId == detailed_asset_id)
-    return q.offset(skip).limit(limit).all()
+    return q.order_by(models.DetailedAssetHistory.HistoryId).offset(skip).limit(limit).all()
 
 
 def create_detailed_history(db: Session, history_in: DetailedAssetHistoryCreate):
